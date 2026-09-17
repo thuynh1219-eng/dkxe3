@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>ESP32 Controller</title>
+  <style>
+    * { box-sizing: border-box; touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+    body { margin: 0; background: #0f172a; color: #fff; font-family: system-ui, -apple-system, sans-serif; text-align: center; }
+    .container { max-width: 420px; margin: auto; padding: 16px; }
+    .tabs { display: flex; gap: 6px; margin: 15px 0; }
+    .tab-btn { flex: 1; padding: 10px 4px; background: #1e293b; border: 2px solid #334155; border-radius: 10px; color: #94a3b8; font-weight: bold; cursor: pointer; font-size: 13px; }
+    .tab-btn.active { background: #2563eb; color: #fff; border-color: #60a5fa; }
+    .info-card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 16px; text-align: left; font-size: 14px; border: 1px solid #334155; }
+    .action-btn { width: 100%; padding: 12px; background: #059669; border: none; border-radius: 8px; color: #fff; font-weight: bold; cursor: pointer; margin-top: 8px; }
+    .action-btn:active { background: #047857; }
+    .status { font-size: 13px; color: #38bdf8; margin-top: 6px; text-align: center; font-weight: bold; }
+    .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px auto; }
+    button.ctl { min-height: 75px; border: none; border-radius: 12px; font-size: 18px; font-weight: 700; color: #fff; background: #334155; cursor: pointer; }
+    button.ctl:active { background: #e11d48; }
+    .stop-btn { background: #991b1b !important; }
+    input { width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #334155; border-radius: 6px; background: #020617; color: #fff; font-size: 14px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h2>ĐIỀU KHIỂN XE ESP32</h2>
+
+  <div class="tabs">
+    <button class="tab-btn active" id="tabBle" onclick="setMode('BLE')">1. BLUETOOTH</button>
+    <button class="tab-btn" id="tabWifi" onclick="setMode('WIFI')">2. WI-FI AP</button>
+    <button class="tab-btn" id="tabConfig" onclick="setMode('CONFIG')">3. CẤU HÌNH STA</button>
+  </div>
+
+  <div class="info-card" id="cardBle">
+    <div>• Giữ nguyên 4G, bấm nút bên dưới để ghép nối trực tiếp.</div>
+    <div style="font-size:12px; color:#cbd5e1; margin-top:4px;"><i>* Trên iPhone: Mở trang web bằng app <b>Bluefy</b> để quét BLE.</i></div>
+    <button class="action-btn" onclick="connectBLE()">KẾT NỐI BLUETOOTH</button>
+    <div class="status" id="bleStatus">Chưa kết nối</div>
+  </div>
+
+  <div class="info-card" id="cardWifi" style="display:none;">
+    <div>1. Kết nối vào Wi-Fi: <b>ESP32_CAR</b> | Pass: <b>12345678</b></div>
+    <div style="font-size:12px; color:#cbd5e1; margin-top:4px;">2. Tắt 4G để điện thoại gửi lệnh thẳng vào IP xe.</div>
+    <div class="status" style="color:#22c55e;">Sẵn sàng lái qua Wi-Fi</div>
+  </div>
+
+  <div class="info-card" id="cardConfig" style="display:none;">
+    <div><b>Cấu hình kết nối Router Wi-Fi nhà:</b></div>
+    <input type="text" id="staSsid" placeholder="Tên Wi-Fi (SSID)" autocomplete="off">
+    <input type="password" id="staPass" placeholder="Mật khẩu Wi-Fi">
+    <button class="action-btn" style="background:#2563eb;" onclick="saveSTA()">LƯU VÀ KẾT NỐI ROUTER</button>
+    <div class="status" id="cfgStatus"></div>
+  </div>
+
+  <div class="pad">
+    <div></div>
+    <button class="ctl" onpointerdown="startCmd('FORWARD')" onpointerup="stopCmd()" onpointerleave="stopCmd()">TIẾN</button>
+    <div></div>
+    <button class="ctl" onpointerdown="startCmd('LEFT')" onpointerup="stopCmd()" onpointerleave="stopCmd()">TRÁI</button>
+    <button class="ctl stop-btn" onclick="sendCmd('STOP')">DỪNG</button>
+    <button class="ctl" onpointerdown="startCmd('RIGHT')" onpointerup="stopCmd()" onpointerleave="stopCmd()">PHẢI</button>
+    <div></div>
+    <button class="ctl" onpointerdown="startCmd('BACKWARD')" onpointerup="stopCmd()" onpointerleave="stopCmd()">LÙI</button>
+    <div></div>
+  </div>
+</div>
+
+<script>
+let currentMode = "BLE";
+let bleChar = null;
+let timer = null;
+let currentCmd = "";
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById("tabBle").classList.toggle("active", mode === "BLE");
+  document.getElementById("tabWifi").classList.toggle("active", mode === "WIFI");
+  document.getElementById("tabConfig").classList.toggle("active", mode === "CONFIG");
+  document.getElementById("cardBle").style.display = (mode === "BLE") ? "block" : "none";
+  document.getElementById("cardWifi").style.display = (mode === "WIFI") ? "block" : "none";
+  document.getElementById("cardConfig").style.display = (mode === "CONFIG") ? "block" : "none";
+}
+
+async function connectBLE() {
+  const statusEl = document.getElementById("bleStatus");
+  if (!navigator.bluetooth) {
+    alert("Trình duyệt không hỗ trợ Web Bluetooth. Trên iOS hãy cài và mở web bằng app Bluefy.");
+    return;
+  }
+  try {
+    statusEl.innerText = "Đang quét xe...";
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "ESP32_CAR" }],
+      optionalServices: ["0000ffe0-0000-1000-8000-00805f9b34fb"]
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService("0000ffe0-0000-1000-8000-00805f9b34fb");
+    bleChar = await service.getCharacteristic("0000ffe1-0000-1000-8000-00805f9b34fb");
+    statusEl.innerText = "Đã nối BLE: " + device.name;
+    statusEl.style.color = "#4ade80";
+  } catch (e) {
+    statusEl.innerText = "Lỗi kết nối: " + e;
+    statusEl.style.color = "#ef4444";
+  }
+}
+
+function sendCmd(cmd) {
+  if (currentMode === "BLE") {
+    if (bleChar) {
+      let data = new TextEncoder().encode(cmd);
+      bleChar.writeValue(data).catch(() => {});
+    }
+  } else {
+    fetch("http://192.168.4.1/control?cmd=" + cmd, { mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {});
+  }
+}
+
+function startCmd(cmd) {
+  if (currentCmd === cmd) return;
+  currentCmd = cmd;
+  sendCmd(cmd);
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => {
+    if (currentCmd !== "") sendCmd(currentCmd);
+  }, 160);
+}
+
+function stopCmd() {
+  currentCmd = "";
+  if (timer) { clearInterval(timer); timer = null; }
+  sendCmd("STOP");
+}
+
+function saveSTA() {
+  const ssid = document.getElementById("staSsid").value.trim();
+  const pass = document.getElementById("staPass").value;
+  const cfgStatus = document.getElementById("cfgStatus");
+
+  if (!ssid) {
+    alert("Vui lòng nhập tên Wi-Fi (SSID)!");
+    return;
+  }
+
+  cfgStatus.innerText = "Đang gửi cấu hình tới ESP32...";
+  cfgStatus.style.color = "#38bdf8";
+
+  const params = new URLSearchParams();
+  params.append("ssid", ssid);
+  params.append("pass", pass);
+
+  fetch("http://192.168.4.1/savewifi", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+    mode: "no-cors"
+  })
+  .then(() => {
+    cfgStatus.innerText = "Đã gửi thông tin! ESP32 đang thử kết nối: " + ssid;
+    cfgStatus.style.color = "#4ade80";
+  })
+  .catch(() => {
+    cfgStatus.innerText = "Lỗi kết nối: Bạn cần vào Wi-Fi ESP32_CAR trước khi cấu hình.";
+    cfgStatus.style.color = "#ef4444";
+  });
+}
+
+window.addEventListener("pointerup", stopCmd);
+</script>
+</body>
+</html>
